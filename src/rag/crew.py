@@ -53,21 +53,14 @@ class Rag:
     @property
     def rag_tool(self):
         """Return a configured RagTool instance"""
-        tool = RagTool(config=self.rag_config, summarize=True)
+        # Create a custom wrapper class to handle the RagTool's expected interface
+        class WrappedRagTool(RagTool):
+            def _run(self, query: str, **kwargs):
+                # Call the parent class's _run method with properly structured arguments
+                return super()._run(query=query, kwargs=kwargs)
         
-        # Get the original method
-        original_run = tool._run
-        
-        # Define a wrapper function that correctly handles the kwargs
-        def run_wrapper(query: str, **kwargs):
-            # Format the kwargs properly according to RagTool's expectations
-            formatted_kwargs = {"kwargs": kwargs} if kwargs else {"kwargs": {}}
-            return original_run(query=query, **formatted_kwargs)
-        
-        # Replace the original method
-        tool._run = run_wrapper
-        
-        return tool
+        # Return an instance of our wrapped class
+        return WrappedRagTool(config=self.rag_config, summarize=True)
     
     @property
     def scrape_tool(self):
