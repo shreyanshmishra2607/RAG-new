@@ -1,8 +1,9 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai_tools import RagTool
-from tools.custom_tool import ScrapeAndProcessTool
+from .tools.custom_tool import ScrapeAndProcessTool
 from datetime import datetime
+import os
 
 @CrewBase
 class Rag:
@@ -11,27 +12,32 @@ class Rag:
     agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks.yaml'
 
-    # ✅ Define the custom RagTool using llama3.1 and nomic embedder
+
+    model = os.getenv("MODEL", "ollama/llama3.1")  # Correctly formatted with provider
+    api_base = os.getenv("API_BASE", "http://localhost:11434")
+
     config = {
-        "app": {
-            "name": "crew_custom_rag_local",
-        },
         "llm": {
             "provider": "ollama",
             "config": {
-                "model": "llama3.1:latest"
+                "model": "llama3.1",  # ✅ No 'ollama/' prefix here!
+                "base_url": api_base
             }
         },
         "embedding_model": {
             "provider": "ollama",
             "config": {
-                "model": "nomic-embed-text:latest"
+                "model": "nomic-embed-text",
+                "base_url": api_base
             }
         }
     }
 
-    # 🔥 Initialize RagTool with this config
-    rag_tool = RagTool(config=config, summarize=True)
+    @property
+    def rag_tool(self):
+        return RagTool(config=self.config, summarize=True)
+
+
 
     @agent
     def researcher(self) -> Agent:
