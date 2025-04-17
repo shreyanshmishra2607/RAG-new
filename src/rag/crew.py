@@ -1,9 +1,10 @@
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
-from crewai_tools import RagTool
+from crewai_tools import RagTool, ScrapeWebsiteTool
 from .tools.custom_tool import ScrapeAndProcessTool
 from datetime import datetime
 import os
+import tempfile
 
 @CrewBase
 class Rag:
@@ -12,15 +13,14 @@ class Rag:
     agents_config = 'config/agents.yaml'
     tasks_config = 'config/tasks.yaml'
 
-
-    model = os.getenv("MODEL", "ollama/llama3.1")  # Correctly formatted with provider
+    model = os.getenv("MODEL", "ollama/llama3.1")
     api_base = os.getenv("API_BASE", "http://localhost:11434")
 
-    config = {
+    rag_config = {
         "llm": {
             "provider": "ollama",
             "config": {
-                "model": "llama3.1",  # ✅ No 'ollama/' prefix here!
+                "model": "llama3.1",
                 "base_url": api_base
             }
         },
@@ -35,23 +35,48 @@ class Rag:
 
     @property
     def rag_tool(self):
-        return RagTool(config=self.config, summarize=True)
+        """Return a configured RagTool instance"""
+        tool = RagTool(config=self.rag_config, summarize=True)
+        
+        # Override the tool's run method to handle kwargs correctly
+        original_run = tool._run
 
+        def run_with_kwargs(query: str, **raw_kwargs):
+            if not raw_kwargs:
+                raw_kwargs = {}
+            return original_run(query=query, kwargs=raw_kwargs)
 
+        tool._run = run_with_kwargs
+        return tool
+    
+    @property
+    def scrape_tool(self):
+        """Return a ScrapeWebsiteTool instance"""
+        return ScrapeWebsiteTool()
 
     @agent
     def researcher(self) -> Agent:
         return Agent(
             config=self.agents_config['researcher'],
-            tools=[self.rag_tool],  # 🧠 Injecting the custom RAG here
-            verbose=True
+            tools=[self.rag_tool, self.scrape_tool],
+            verbose=True,
+            llm_config={ 
+                "provider": "ollama",
+                "model": self.model.replace("ollama/", ""),
+                "base_url": self.api_base
+            }
         )
 
     @agent
     def reporting_analyst(self) -> Agent:
         return Agent(
             config=self.agents_config['reporting_analyst'],
-            verbose=True
+            verbose=True,
+            llm_config={ 
+                "provider": "ollama",
+                "model": self.model.replace("ollama/", ""),
+                "base_url": self.api_base
+            }
         )
 
     @task
@@ -73,16 +98,40 @@ class Rag:
         urls = input("Enter 3 URLs (separate with commas): ").split(",")
         user_prompt = input("Enter your question: ")
 
-        # Initialize the scrape and RAG processing tool
-        scrape_and_rag_tool = ScrapeAndProcessTool(urls=urls, user_prompt=user_prompt)
-        merged_topic, scraped_text, user_prompt = scrape_and_rag_tool.scrape_and_process()
-
-        # Inject the merged topic, scraped text, and user prompt into the rag_tool for processing
-        self.rag_tool.set_data(scraped_text, user_prompt)
-
-        # Use the dynamically extracted topic for the crew input
+        # Instead of trying to set_data which doesn't exist,
+        # we'll pass the information directly as context
+        
+        # First, scrape content from URLs
+        scraped_texts = []
+        topics = []
+        
+        for url in urls:
+            url = url.strip()
+            if url:
+                # Extract topic from URL
+                topic = url.rstrip('/').split('/')[-1].replace('-', ' ').replace('_', ' ').title()
+                topics.append(topic)
+                
+                # Scrape the website
+                try:
+                    scrape_tool = ScrapeWebsiteTool(website_url=url)
+                    content = scrape_tool.run()
+                    # Clean the content to remove problematic characters
+                    content = ''.join(char for char in content if ord(char) < 128)
+                    scraped_texts.append(content)
+                except Exception as e:
+                    print(f"Error scraping {url}: {e}")
+        
+        # Merge extracted topics and texts
+        merged_topic = ' '.join(topics) if topics else "Research Topic"
+        context_info = f"User Question: {user_prompt}\n\nScraped Content Summary:\n"
+        context_info += "\n\n".join(scraped_texts[:1000])  # Limit the size to avoid encoding issues
+                
+        # Set up the inputs for the crew
         inputs = {
             'topic': merged_topic,
+            'user_question': user_prompt,
+            'scraped_content': context_info,
             'current_year': str(datetime.now().year)
         }
 
@@ -91,4 +140,10 @@ class Rag:
             tasks=[self.research_task(), self.reporting_task()],
             process=Process.sequential,
             verbose=True,
+            inputs=inputs,
+            llm_config={ 
+                "provider": "ollama",
+                "model": self.model.replace("ollama/", ""),
+                "base_url": self.api_base
+            }
         )
